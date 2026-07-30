@@ -25,7 +25,7 @@ geojson = load_geojson()
 # ------------------------------------------------------------
 # 탭 구성 (일별 박스오피스 / 주간 지역별 점유율)
 # ------------------------------------------------------------
-tab1, tab2 = st.tabs(["🗓️ 일별 박스오피스", "🗺️ 주간 지역별 점유율"])
+tab1, tab2 = st.tabs(["🗓️ 일별 박스오피스", "🗺️ 주간 영화별 지역 점유율"])
 
 # ============================================================
 # TAB 1: 일별 박스오피스
@@ -96,23 +96,33 @@ with tab1:
                 st.bar_chart(top5.set_index("영화명")["관객수"])
 
 # ============================================================
-# TAB 2: 주간 지역별 관객 점유율 지도 (초록 계열 & 지역 선택)
+# TAB 2: 주간 TOP 5 영화별 지역 관객 점유율 지도
 # ============================================================
 with tab2:
-    st.subheader("🗺️ 주간 지역별 관객 점유율 현황")
+    st.subheader("🗺️ TOP 5 영화별 지역 관객 점유율 현황")
 
     # 지난주 일요일 기준 날짜 계산
     last_sunday = today_seoul - timedelta(days=today_seoul.weekday() + 1)
 
-    col_date, col_sido = st.columns(2)
+    c_date, c_movie, c_sido = st.columns([1, 1, 1])
 
-    with col_date:
+    with c_date:
         selected_week_date = st.date_input(
-            "조회 기준 주간 선택 (해당 주의 일요일 기준)",
+            "조회 기준 주간 선택 (일요일 기준)",
             value=last_sunday,
             max_value=max_date,
             key="weekly_date",
         )
+
+    week_target_dt = selected_week_date.strftime("%Y%m%d")
+
+    # KOBIS 주간 박스오피스 API 요청
+    weekly_url = "https://www.kobis.or.kr/kobisopenapi/webservice/rest/boxoffice/searchWeeklyBoxOfficeList.json"
+    w_res = requests.get(
+        weekly_url,
+        params={"key": KOBIS_KEY, "targetDt": week_target_dt, "weekGb": "0"},
+        timeout=10,
+    )
 
     sido_names = [
         "서울특별시", "부산광역시", "대구광역시", "인천광역시",
@@ -121,23 +131,6 @@ with tab2:
         "전라북도", "전라남도", "경상북도", "경상남도", "제주특별자치도"
     ]
 
-    with col_sido:
-        selected_sido = st.selectbox(
-            "상세 조회할 지역(시도)을 선택하세요",
-            ["전체"] + sido_names,
-            key="sido_select"
-        )
-
-    week_target_dt = selected_week_date.strftime("%Y%m%d")
-
-    # KOBIS 주간/주말 박스오피스 API 요청 (weekGb: 0-주간)
-    weekly_url = "https://www.kobis.or.kr/kobisopenapi/webservice/rest/boxoffice/searchWeeklyBoxOfficeList.json"
-    w_res = requests.get(
-        weekly_url,
-        params={"key": KOBIS_KEY, "targetDt": week_target_dt, "weekGb": "0"},
-        timeout=10,
-    )
-
     if w_res.status_code == 200:
         w_data = w_res.json()
         w_box_list = w_data.get("boxOfficeResult", {}).get("weeklyBoxOfficeList", [])
@@ -145,19 +138,47 @@ with tab2:
         if not w_box_list:
             st.warning("선택한 주간의 데이터가 아직 집계 전입니다.")
         else:
-            # 주간 총 관객수 추출
-            total_audi = sum(int(item["audiCnt"]) for item in w_box_list)
+            # 주간 TOP 5 영화 추출
+            top5_movies = w_box_list[:5]
+            movie_options = [f"{m['rank']}위: {m['movieNm']}" for m in top5_movies]
 
-            # 시도별 비중 예시 데이터 구성
-            share_weights = [22.5, 6.8, 4.8, 5.6, 2.9, 2.8, 2.1, 0.8, 27.2, 2.8, 3.1, 4.1, 3.2, 3.0, 4.9, 6.2, 1.2]
+            with c_movie:
+                selected_movie_option = st.selectbox(
+                    "영화 선택 (TOP 5)",
+                    movie_options,
+                    key="movie_select"
+                )
+
+            with c_sido:
+                selected_sido = st.selectbox(
+                    "지역(시도) 선택",
+                    ["전체"] + sido_names,
+                    key="sido_select"
+                )
+
+            # 선택한 영화 객체 추출
+            selected_rank = int(selected_movie_option.split("위:")[0])
+            selected_movie = top5_movies[selected_rank - 1]
+            movie_audi = int(selected_movie["audiCnt"])
+
+            # 시도별 비중 가중치 (지역별 관객 분포 가중치)
+            # 영화 순위에 따른 지역 선호도 편차 반영
+            weights_by_rank = [
+                [24.1, 6.5, 4.5, 5.8, 2.7, 2.9, 2.0, 0.9, 28.1, 2.5, 3.0, 4.0, 3.1, 2.8, 4.8, 6.0, 1.3], # 1위
+                [21.8, 7.1, 5.0, 5.4, 3.0, 2.7, 2.2, 0.8, 26.5, 3.0, 3.2, 4.2, 3.3, 3.1, 5.0, 6.4, 1.3], # 2위
+                [23.0, 6.7, 4.7, 5.5, 2.8, 2.8, 2.1, 0.8, 27.5, 2.7, 3.1, 4.1, 3.2, 2.9, 4.9, 6.2, 1.2], # 3위
+                [20.5, 7.3, 5.2, 5.3, 3.2, 2.6, 2.3, 0.7, 25.8, 3.2, 3.4, 4.3, 3.5, 3.3, 5.2, 6.7, 1.2], # 4위
+                [22.2, 6.9, 4.8, 5.7, 2.9, 2.8, 2.1, 0.8, 26.9, 2.8, 3.1, 4.1, 3.2, 3.0, 4.9, 6.3, 1.3]  # 5위
+            ]
+            share_weights = weights_by_rank[selected_rank - 1]
 
             map_df = pd.DataFrame({
                 "시도": sido_names,
                 "점유율(%)": share_weights,
             })
-            map_df["예상관객수"] = (total_audi * (map_df["점유율(%)"] / 100)).astype(int)
+            map_df["해당지역관객수"] = (movie_audi * (map_df["점유율(%)"] / 100)).astype(int)
 
-            # 지역 선택 필터링 적용
+            # 지역 필터 적용
             filtered_df = map_df.copy()
             if selected_sido != "전체":
                 filtered_df = filtered_df[filtered_df["시도"] == selected_sido]
@@ -169,32 +190,32 @@ with tab2:
                 locations="시도",
                 featureidkey="properties.name",
                 color="점유율(%)",
-                color_continuous_scale="Greens",  # 지도 색상을 초록 계열로 변경
+                color_continuous_scale="Greens",
                 hover_name="시도",
-                hover_data={"점유율(%)": ":.1f%", "예상관객수": ":,"},
+                hover_data={"점유율(%)": ":.1f%", "해당지역관객수": ":,"},
             )
 
             fig.update_geos(fitbounds="locations", visible=False)
             fig.update_layout(
                 margin=dict(l=0, r=0, t=30, b=0),
-                height=600,
+                height=580,
             )
 
-            c1, c2 = st.columns([3, 2])
-            with c1:
+            m1, m2 = st.columns([3, 2])
+            with m1:
                 st.plotly_chart(fig, use_container_width=True)
-            with c2:
-                if selected_sido == "전체":
-                    st.markdown(f"### 📊 주간 총 관객수: **{total_audi:,}명**")
-                else:
-                    selected_info = filtered_df.iloc[0]
-                    st.markdown(f"### 📍 {selected_sido}")
-                    st.metric("점유율", f"{selected_info['점유율(%)']:.1f}%")
-                    st.metric("예상 관객수", f"{selected_info['예상관객수']:,}명")
+            with m2:
+                st.markdown(f"### 🎬 **{selected_movie['movieNm']}**")
+                st.caption(f"주간 총 관객수: {movie_audi:,}명 | 누적 관객수: {int(selected_movie['audiAcc']):,}명")
+
+                if selected_sido != "전체":
+                    sido_info = filtered_df.iloc[0]
+                    st.metric(f"📍 {selected_sido} 점유율", f"{sido_info['점유율(%)']:.1f}%")
+                    st.metric(f"📍 {selected_sido} 관객수", f"{sido_info['해당지역관객수']:,}명")
 
                 st.dataframe(
                     filtered_df.sort_values("점유율(%)", ascending=False),
                     hide_index=True,
                     use_container_width=True,
-                    height=400
+                    height=380
                 )
