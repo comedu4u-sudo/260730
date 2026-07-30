@@ -1,6 +1,7 @@
 # ============================================================
 # 전국 시군구 고령화 지도
 # Part 1
+# app.py
 # ============================================================
 
 import re
@@ -10,13 +11,56 @@ import streamlit as st
 import plotly.express as px
 
 # ------------------------------------------------------------
-# 화면 설정
+# 페이지 설정
 # ------------------------------------------------------------
 st.set_page_config(
-    page_title="전국 고령화 지도",
-    layout="wide"
+    page_title="전국 시군구 고령화 지도",
+    page_icon="🗺️",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
+# ------------------------------------------------------------
+# CSS
+# ------------------------------------------------------------
+st.markdown(
+    """
+<style>
+
+.block-container{
+    padding-top:1rem;
+    padding-bottom:1rem;
+    max-width:1500px;
+}
+
+[data-testid="stSidebar"]{
+    background:#f5f7fb;
+}
+
+[data-testid="metric-container"]{
+    background:white;
+    border-radius:16px;
+    padding:18px;
+    border:1px solid #e6eaf2;
+    box-shadow:0 2px 10px rgba(0,0,0,.06);
+}
+
+h1{
+    font-weight:700;
+}
+
+div[data-testid="stExpander"]{
+    border-radius:12px;
+}
+
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+# ------------------------------------------------------------
+# 제목
+# ------------------------------------------------------------
 st.title("🗺️ 전국 시군구 고령화 지도")
 st.caption("2015~2026년 시군구별 65세 이상 인구 비율")
 
@@ -32,57 +76,82 @@ GEO_URL = (
 )
 
 # ------------------------------------------------------------
-# 인구 데이터
+# 데이터 읽기
 # ------------------------------------------------------------
-@st.cache_data(show_spinner="인구 데이터를 불러오는 중입니다...")
+@st.cache_data(show_spinner="인구 데이터를 불러오는 중...")
 def load_population():
 
-    df = pd.read_csv(
+    return pd.read_csv(
         POP_URL,
         dtype={"코드": str},
     )
 
-    return df
 
-
-# ------------------------------------------------------------
-# 지도 데이터
-# ------------------------------------------------------------
-@st.cache_data(show_spinner="지도 데이터를 불러오는 중입니다...")
+@st.cache_data(show_spinner="지도 데이터를 불러오는 중...")
 def load_geojson():
 
-    geojson = requests.get(
+    return requests.get(
         GEO_URL,
         timeout=30,
     ).json()
 
-    return geojson
 
-
-# ------------------------------------------------------------
-# 데이터 읽기
-# ------------------------------------------------------------
 df = load_population()
 geojson = load_geojson()
 
 # ------------------------------------------------------------
-# 연도 선택 슬라이더
+# 사이드바
 # ------------------------------------------------------------
-years = sorted(df["연도"].unique())
+with st.sidebar:
 
-selected_year = st.slider(
-    "연도 선택",
-    min_value=int(min(years)),
-    max_value=int(max(years)),
-    value=int(max(years)),
-    step=1,
-)
+    st.header("⚙️ 설정")
 
-# 선택한 연도만 사용
+    years = sorted(df["연도"].unique())
+
+    selected_year = st.slider(
+        "연도 선택",
+        min_value=int(min(years)),
+        max_value=int(max(years)),
+        value=int(max(years)),
+    )
+
+    sido_list = (
+        df["시도"]
+        .dropna()
+        .sort_values()
+        .unique()
+        .tolist()
+    )
+
+    selected_sido = st.selectbox(
+        "시도 선택",
+        ["전체"] + sido_list,
+    )
+
+    keyword = st.text_input(
+        "시군구 검색",
+        placeholder="예) 청주"
+    )
+
+    st.divider()
+
+    st.info(
+        """
+지도에서 지역의 고령화율을 비교하고,
+아래에서 상세 정보를 확인하세요.
+"""
+    )
+
+# ------------------------------------------------------------
+# 연도 필터
+# ------------------------------------------------------------
 df = df[df["연도"] == selected_year].copy()
 
+if selected_sido != "전체":
+    df = df[df["시도"] == selected_sido].copy()
+
 # ------------------------------------------------------------
-# 전체 인구 열 찾기
+# 전체 인구 컬럼
 # ------------------------------------------------------------
 total_cols = [
     c
@@ -91,7 +160,6 @@ total_cols = [
 ]
 
 
-# 나이 숫자 추출
 def age_of(col):
 
     m = re.match(r"계_(\d+)세", col)
@@ -102,9 +170,6 @@ def age_of(col):
     return None
 
 
-# ------------------------------------------------------------
-# 65세 이상 열 찾기
-# ------------------------------------------------------------
 elderly_cols = []
 
 for c in total_cols:
@@ -117,50 +182,50 @@ for c in total_cols:
 if "계_100세 이상" in total_cols:
     elderly_cols.append("계_100세 이상")
 
-# ===== Part 2에서 계속 =====
+# ===== Part 2 계속 =====
+
 # ============================================================
 # Part 2
+# 데이터 가공
 # ============================================================
 
 # ------------------------------------------------------------
-# 읍면동 → 시군구 집계
+# 읍면동 인구 계산
 # ------------------------------------------------------------
-
-# 읍면동 전체 인구
 df["전체인구"] = df[total_cols].sum(axis=1)
-
-# 읍면동 65세 이상 인구
 df["고령인구"] = df[elderly_cols].sum(axis=1)
 
-# 시군구 코드(앞 5자리)
+# ------------------------------------------------------------
+# 시군구 코드
+# ------------------------------------------------------------
 df["시군구코드"] = df["코드"].str[:5]
 
-# 시군구 단위로 합계
+# ------------------------------------------------------------
+# 시군구 집계
+# ------------------------------------------------------------
 grouped = (
     df.groupby("시군구코드")[["전체인구", "고령인구"]]
     .sum()
     .reset_index()
 )
 
-# 고령화율 계산
 grouped["고령화율"] = (
-    grouped["고령인구"] / grouped["전체인구"] * 100
+    grouped["고령인구"]
+    / grouped["전체인구"]
+    * 100
 ).round(2)
 
 # ------------------------------------------------------------
-# GeoJSON에서 이름 가져오기
+# GeoJSON 이름 연결
 # ------------------------------------------------------------
-
-names = pd.DataFrame(
-    [
-        {
-            "시군구코드": str(f["properties"]["코드"]),
-            "시군구": f["properties"]["시군구"],
-            "시도": f["properties"]["시도"],
-        }
-        for f in geojson["features"]
-    ]
-)
+names = pd.DataFrame([
+    {
+        "시군구코드": str(f["properties"]["코드"]),
+        "시군구": f["properties"]["시군구"],
+        "시도": f["properties"]["시도"],
+    }
+    for f in geojson["features"]
+])
 
 merged = grouped.merge(
     names,
@@ -168,10 +233,21 @@ merged = grouped.merge(
     how="left",
 )
 
+merged["지역"] = merged["시도"] + " " + merged["시군구"]
+
+# ------------------------------------------------------------
+# 검색
+# ------------------------------------------------------------
+if keyword:
+
+    merged = merged[
+        merged["지역"]
+        .str.contains(keyword, case=False, na=False)
+    ]
+
 # ------------------------------------------------------------
 # 전국 평균
 # ------------------------------------------------------------
-
 national_rate = (
     merged["고령인구"].sum()
     / merged["전체인구"].sum()
@@ -187,40 +263,8 @@ lowest = merged.loc[
 ]
 
 # ------------------------------------------------------------
-# 화면 요약
-# ------------------------------------------------------------
-
-m1, m2, m3 = st.columns(3)
-
-with m1:
-    st.metric(
-        "전국 평균",
-        f"{national_rate:.1f}%"
-    )
-
-with m2:
-    st.metric(
-        "가장 높은 지역",
-        f"{highest['시군구']}",
-        f"{highest['고령화율']:.1f}%"
-    )
-
-with m3:
-    st.metric(
-        "가장 낮은 지역",
-        f"{lowest['시군구']}",
-        f"{lowest['고령화율']:.1f}%"
-    )
-
-# ===== Part 3에서 계속 =====
-# ============================================================
-# Part 3
-# ============================================================
-
-# ------------------------------------------------------------
 # 단계 구분
 # ------------------------------------------------------------
-
 BINS = [
     0,
     19,
@@ -238,7 +282,6 @@ LABELS = [
     "38% 이상",
 ]
 
-# 블루 계열
 COLORS = {
     "19% 미만": "#eff3ff",
     "19~23%": "#bdd7e7",
@@ -255,255 +298,385 @@ merged["단계"] = pd.cut(
 )
 
 # ------------------------------------------------------------
+# KPI
+# ------------------------------------------------------------
+k1, k2, k3, k4 = st.columns(4)
+
+with k1:
+    st.metric(
+        "🇰🇷 전국 평균",
+        f"{national_rate:.1f}%"
+    )
+
+with k2:
+    st.metric(
+        "📈 최고 지역",
+        highest["시군구"],
+        f"{highest['고령화율']:.1f}%"
+    )
+
+with k3:
+    st.metric(
+        "📉 최저 지역",
+        lowest["시군구"],
+        f"{lowest['고령화율']:.1f}%"
+    )
+
+with k4:
+    st.metric(
+        "🏙️ 분석 지역",
+        selected_sido,
+    )
+
+st.divider()
+
+# ------------------------------------------------------------
+# 탭
+# ------------------------------------------------------------
+tab1, tab2, tab3, tab4 = st.tabs(
+    [
+        "🗺️ 지도",
+        "📊 지역 분석",
+        "🏆 순위",
+        "📖 탐구 활동",
+    ]
+)
+
+# ===== Part 3 계속 =====
+# ============================================================
+# Part 3
 # 지도
-# ------------------------------------------------------------
+# ============================================================
 
-fig = px.choropleth(
-    merged,
-    geojson=geojson,
-    locations="시군구코드",
-    featureidkey="properties.코드",
-    color="단계",
-    category_orders={
-        "단계": LABELS
-    },
-    color_discrete_map=COLORS,
-    hover_name="시군구",
-    hover_data={
-        "시도": True,
-        "고령화율": ":.2f",
-        "시군구코드": False,
-        "단계": False,
-    },
-    labels={
-        "고령화율": "65세 이상 비율(%)"
-    },
-)
+with tab1:
 
-# ------------------------------------------------------------
-# 경계선
-# ------------------------------------------------------------
+    st.subheader(f"🗺️ {selected_year}년 시군구별 고령화율")
 
-fig.update_traces(
-    marker_line_color="white",
-    marker_line_width=0.6,
-)
+    fig = px.choropleth(
+        merged,
+        geojson=geojson,
+        locations="시군구코드",
+        featureidkey="properties.코드",
+        color="단계",
+        category_orders={
+            "단계": LABELS
+        },
+        color_discrete_map=COLORS,
+        hover_name="시군구",
+        hover_data={
+            "시도": True,
+            "고령화율":":.2f",
+            "전체인구":":,",
+            "고령인구":":,",
+            "시군구코드":False,
+            "단계":False,
+        },
+        labels={
+            "고령화율":"65세 이상 비율"
+        },
+    )
 
-# ------------------------------------------------------------
-# 배경 지도 제거
-# ------------------------------------------------------------
+    fig.update_traces(
+        marker_line_color="white",
+        marker_line_width=0.6,
+    )
 
-fig.update_geos(
-    fitbounds="locations",
-    visible=False,
-)
+    fig.update_geos(
+        fitbounds="locations",
+        visible=False,
+    )
 
-# ------------------------------------------------------------
-# 레이아웃
-# ------------------------------------------------------------
+    fig.update_layout(
+        margin=dict(
+            l=0,
+            r=0,
+            t=0,
+            b=0,
+        ),
+        height=780,
+        legend_title="고령화율",
+    )
 
-fig.update_layout(
-    margin=dict(
-        l=0,
-        r=0,
-        t=10,
-        b=0,
-    ),
-    height=750,
-    legend_title_text=f"65세 이상 비율 ({selected_year}년)",
-)
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+    )
 
-st.plotly_chart(
-    fig,
-    use_container_width=True,
-)
+# ============================================================
+# 지역 분석
+# ============================================================
 
-# ===== Part 4에서 계속 =====
+with tab2:
+
+    st.subheader("📊 지역 상세 분석")
+
+    region = st.selectbox(
+        "시군구 선택",
+        merged["지역"].sort_values().tolist()
+    )
+
+    row = merged[
+        merged["지역"] == region
+    ].iloc[0]
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+
+        st.metric(
+            "고령화율",
+            f"{row['고령화율']:.2f}%"
+        )
+
+    with c2:
+
+        st.metric(
+            "65세 이상 인구",
+            f"{int(row['고령인구']):,}명"
+        )
+
+    with c3:
+
+        diff = row["고령화율"] - national_rate
+
+        st.metric(
+            "전국 평균과 차이",
+            f"{diff:+.2f}%p"
+        )
+
+    st.divider()
+
+    chart_df = pd.DataFrame(
+        {
+            "항목":[
+                "전체인구",
+                "65세 이상",
+            ],
+            "인구":[
+                row["전체인구"],
+                row["고령인구"],
+            ],
+        }
+    )
+
+    fig2 = px.bar(
+        chart_df,
+        x="항목",
+        y="인구",
+        text="인구",
+        color="항목",
+    )
+
+    fig2.update_traces(
+        texttemplate="%{y:,.0f}",
+        textposition="outside",
+    )
+
+    fig2.update_layout(
+        showlegend=False,
+        height=450,
+    )
+
+    st.plotly_chart(
+        fig2,
+        use_container_width=True,
+    )
+
+# ===== Part 4 계속 =====
 # ============================================================
 # Part 4
-# 지역 선택 · TOP10 · CSV 다운로드
+# 순위 · 다운로드
 # ============================================================
 
-st.divider()
+with tab3:
 
-# ------------------------------------------------------------
-# 시군구 선택
-# ------------------------------------------------------------
-st.subheader("📍 시군구 상세 보기")
+    st.subheader("🏆 시군구 고령화율 순위")
 
-merged["지역"] = merged["시도"] + " " + merged["시군구"]
+    left, right = st.columns(2)
 
-selected_region = st.selectbox(
-    "시군구를 선택하세요.",
-    merged["지역"].sort_values()
-)
-
-row = merged[merged["지역"] == selected_region].iloc[0]
-
-c1, c2, c3 = st.columns(3)
-
-with c1:
-    st.metric(
-        "고령화율",
-        f"{row['고령화율']:.2f}%"
-    )
-
-with c2:
-    st.metric(
-        "65세 이상 인구",
-        f"{int(row['고령인구']):,}명"
-    )
-
-with c3:
-    diff = row["고령화율"] - national_rate
-
-    st.metric(
-        "전국 평균과 차이",
-        f"{diff:+.2f}%p"
-    )
-
-st.caption(
-    f"선택 지역 : **{row['시도']} {row['시군구']}**"
-)
-
-# ------------------------------------------------------------
-# 높은 곳 / 낮은 곳
-# ------------------------------------------------------------
-st.divider()
-
-left, right = st.columns(2)
-
-cols = [
-    "시도",
-    "시군구",
-    "고령화율",
-]
-
-with left:
-
-    st.subheader("🔴 고령화율 높은 곳 TOP10")
-
-    high = (
-        merged
-        .nlargest(10, "고령화율")[cols]
-        .reset_index(drop=True)
-    )
-
-    st.dataframe(
-        high,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-with right:
-
-    st.subheader("🔵 고령화율 낮은 곳 TOP10")
-
-    low = (
-        merged
-        .nsmallest(10, "고령화율")[cols]
-        .reset_index(drop=True)
-    )
-
-    st.dataframe(
-        low,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-# ------------------------------------------------------------
-# CSV 다운로드
-# ------------------------------------------------------------
-st.divider()
-
-download_df = merged[
-    [
+    cols = [
         "시도",
         "시군구",
-        "시군구코드",
         "전체인구",
         "고령인구",
         "고령화율",
     ]
-].sort_values(
-    "고령화율",
-    ascending=False,
-)
 
-csv = download_df.to_csv(
-    index=False,
-    encoding="utf-8-sig",
-)
+    with left:
 
-st.download_button(
-    label="📥 시군구별 고령화율 CSV 다운로드",
-    data=csv,
-    file_name=f"고령화율_{selected_year}.csv",
-    mime="text/csv",
-)
+        st.markdown("### 🔴 고령화율 높은 지역 TOP10")
 
-# ------------------------------------------------------------
-# 탐구 활동
-# ------------------------------------------------------------
-with st.expander("💡 중학교 사회·지리 탐구 활동"):
+        high = (
+            merged
+            .sort_values(
+                "고령화율",
+                ascending=False
+            )[cols]
+            .head(10)
+        )
 
-    st.markdown(
-        """
-### 탐구해 보세요!
+        st.dataframe(
+            high,
+            use_container_width=True,
+            hide_index=True,
+        )
 
-① 어느 지역의 고령화율이 가장 높은가?
+    with right:
 
-② 수도권과 비수도권은 어떤 차이가 있는가?
+        st.markdown("### 🔵 고령화율 낮은 지역 TOP10")
 
-③ 농촌 지역과 도시 지역은 어떤 차이가 있는가?
+        low = (
+            merged
+            .sort_values(
+                "고령화율"
+            )[cols]
+            .head(10)
+        )
 
-④ 2015년과 비교하면 어떤 지역의 변화가 가장 큰가?
+        st.dataframe(
+            low,
+            use_container_width=True,
+            hide_index=True,
+        )
 
-⑤ 우리 지역은 전국 평균보다 높은가? 낮은가?
+    st.divider()
 
-⑥ 고령화가 심한 지역에는 어떤 문제가 생길 수 있을까?
+    st.subheader("📋 전체 시군구")
 
-⑦ 이러한 문제를 해결하기 위한 정책에는 무엇이 있을까?
-"""
+    show = merged[
+        [
+            "시도",
+            "시군구",
+            "전체인구",
+            "고령인구",
+            "고령화율",
+        ]
+    ].sort_values(
+        "고령화율",
+        ascending=False,
     )
 
-st.success("연도 슬라이더를 움직이면 고령화율 변화를 직접 비교할 수 있습니다.")
+    st.dataframe(
+        show,
+        use_container_width=True,
+        hide_index=True,
+        height=500,
+    )
 
-with st.expander("📖 탐구 문제와 예시 답안"):
-    st.markdown("""
-### ① 어느 지역의 고령화율이 가장 높은가?
-👉 지도에서 가장 진한 색으로 표시된 시군구를 찾아보고 그 이유를 생각해 보세요.
+    csv = show.to_csv(
+        index=False,
+        encoding="utf-8-sig",
+    )
 
-### 예시 답
-농촌 지역이 많은 전남·경북 지역에서 높은 고령화율이 나타난다. 젊은 층의 도시 이동과 낮은 출생률이 주요 원인이다.
+    st.download_button(
+        "📥 CSV 다운로드",
+        csv,
+        file_name=f"고령화율_{selected_year}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+# ============================================================
+# Part 5 계속
+# ============================================================
+# ============================================================
+# Part 5
+# 탐구 활동
+# ============================================================
+
+with tab4:
+
+    st.subheader("📖 중학교 사회·지리 탐구 활동")
+
+    with st.expander("💡 탐구 문제"):
+
+        st.markdown(
+            f"""
+### {selected_year}년 우리나라 고령화 현황을 살펴봅시다.
+
+#### ① 가장 고령화율이 높은 지역은 어디인가?
+
+👉 지도에서 가장 진한 색을 찾아보고 이유를 생각해 보세요.
 
 ---
 
-### ② 수도권과 비수도권의 차이는?
-👉 수도권은 낮고 비수도권은 높은 경향을 보인다.
+#### ② 수도권과 비수도권은 어떤 차이가 있나요?
+
+👉 어떤 지역에서 고령화가 심한지 비교해 보세요.
 
 ---
 
-### ③ 농촌과 도시의 차이는?
-👉 농촌은 노인 인구 비율이 높고, 도시는 청년층이 많다.
+#### ③ 농촌과 도시의 차이는 무엇일까요?
+
+👉 고령화율을 비교하여 이유를 설명해 보세요.
 
 ---
 
-### ④ 2015년과 비교하면?
-👉 대부분 지역에서 고령화율이 증가했으며 농촌 지역의 증가 폭이 크다.
+#### ④ 우리 지역은 전국 평균보다 높은가요?
+
+전국 평균 : **{national_rate:.2f}%**
+
+선택 지역과 비교해 보세요.
 
 ---
 
-### ⑤ 우리 지역은 전국 평균보다 높은가?
-👉 선택한 시군구와 전국 평균을 비교해 보자.
+#### ⑤ 고령화가 심해지면 어떤 문제가 발생할까요?
+
+- 학교 감소
+- 노동력 부족
+- 의료·복지 수요 증가
+- 빈집 증가
+- 대중교통 감소
 
 ---
 
-### ⑥ 어떤 문제가 생길까?
-👉 학교 감소, 의료·교통 부족, 노동력 감소, 빈집 증가 등이 예상된다.
+#### ⑥ 해결 방법은 무엇일까요?
 
----
+- 청년 일자리 확대
+- 귀농·귀촌 지원
+- 출산 지원 정책
+- 의료·복지 확대
+- 지역 산업 육성
+"""
+        )
 
-### ⑦ 해결 방법은?
-👉 청년 일자리 확대, 귀농 지원, 복지 확대, 지역 산업 육성 등이 필요하다.
-""")
+    with st.expander("📝 예시 답안"):
+
+        st.markdown(
+            """
+### 예시
+
+① 농촌 지역의 고령화율이 가장 높다.
+
+② 수도권은 청년층이 많아 낮고, 비수도권은 높다.
+
+③ 농촌은 청년 인구 유출이 많아 노인 비율이 높다.
+
+④ 우리 지역이 전국 평균보다 높은지 확인해 본다.
+
+⑤ 노동력 감소, 학교 통폐합, 의료 문제 등이 발생할 수 있다.
+
+⑥ 청년 유입 정책과 복지 확대가 필요하다.
+"""
+        )
+
+    st.divider()
+
+    st.success(
+        "💡 연도 슬라이더를 움직이면 2015년부터 2026년까지 고령화율 변화를 비교할 수 있습니다."
+    )
+
+    st.info(
+        "🖱️ 지도에 마우스를 올리면 해당 시군구의 고령화율과 인구를 확인할 수 있습니다."
+    )
+
+# ============================================================
+# Footer
+# ============================================================
+
+st.divider()
+
+st.caption(
+    "자료 : 행정안전부 주민등록 인구통계 · GeoJSON : modudata · "
+    "제작 : Streamlit + Plotly"
+)
