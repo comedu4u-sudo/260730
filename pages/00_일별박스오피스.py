@@ -96,20 +96,37 @@ with tab1:
                 st.bar_chart(top5.set_index("영화명")["관객수"])
 
 # ============================================================
-# TAB 2: 주간 지역별 관객 점유율 지도
+# TAB 2: 주간 지역별 관객 점유율 지도 (초록 계열 & 지역 선택)
 # ============================================================
 with tab2:
     st.subheader("🗺️ 주간 지역별 관객 점유율 현황")
 
     # 지난주 일요일 기준 날짜 계산
     last_sunday = today_seoul - timedelta(days=today_seoul.weekday() + 1)
-    
-    selected_week_date = st.date_input(
-        "조회 기준 주간 선택 (해당 주의 일요일 기준)",
-        value=last_sunday,
-        max_value=max_date,
-        key="weekly_date",
-    )
+
+    col_date, col_sido = st.columns(2)
+
+    with col_date:
+        selected_week_date = st.date_input(
+            "조회 기준 주간 선택 (해당 주의 일요일 기준)",
+            value=last_sunday,
+            max_value=max_date,
+            key="weekly_date",
+        )
+
+    sido_names = [
+        "서울특별시", "부산광역시", "대구광역시", "인천광역시",
+        "광주광역시", "대전광역시", "울산광역시", "세종특별자치시",
+        "경기도", "강원특별자치도", "충청북도", "충청남도",
+        "전라북도", "전라남도", "경상북도", "경상남도", "제주특별자치도"
+    ]
+
+    with col_sido:
+        selected_sido = st.selectbox(
+            "상세 조회할 지역(시도)을 선택하세요",
+            ["전체"] + sido_names,
+            key="sido_select"
+        )
 
     week_target_dt = selected_week_date.strftime("%Y%m%d")
 
@@ -128,35 +145,31 @@ with tab2:
         if not w_box_list:
             st.warning("선택한 주간의 데이터가 아직 집계 전입니다.")
         else:
-            # 시도별 행정구역 매핑용 샘플 데이터셋 구성
-            # (※ KOBIS 기본 API는 전국 종합 데이터만 포함하므로 시도별 비중 예시 시각화)
-            sido_names = [
-                "서울특별시", "부산광역시", "대구광역시", "인천광역시",
-                "광주광역시", "대전광역시", "울산광역시", "세종특별자치시",
-                "경기도", "강원특별자치도", "충청북도", "충청남도",
-                "전라북도", "전라남도", "경상북도", "경상남도", "제주특별자치도"
-            ]
-
             # 주간 총 관객수 추출
             total_audi = sum(int(item["audiCnt"]) for item in w_box_list)
 
-            # 시도별 인구 및 극장 수 비중에 맞춘 점유율 추정치 (실제 시각화용)
+            # 시도별 비중 예시 데이터 구성
             share_weights = [22.5, 6.8, 4.8, 5.6, 2.9, 2.8, 2.1, 0.8, 27.2, 2.8, 3.1, 4.1, 3.2, 3.0, 4.9, 6.2, 1.2]
-            
+
             map_df = pd.DataFrame({
                 "시도": sido_names,
                 "점유율(%)": share_weights,
             })
             map_df["예상관객수"] = (total_audi * (map_df["점유율(%)"] / 100)).astype(int)
 
-            # Choropleth 지도 생성
+            # 지역 선택 필터링 적용
+            filtered_df = map_df.copy()
+            if selected_sido != "전체":
+                filtered_df = filtered_df[filtered_df["시도"] == selected_sido]
+
+            # 초록 계열(Greens) 지도 시각화
             fig = px.choropleth(
-                map_df,
+                filtered_df,
                 geojson=geojson,
                 locations="시도",
                 featureidkey="properties.name",
                 color="점유율(%)",
-                color_continuous_scale="Reds",
+                color_continuous_scale="Greens",  # 지도 색상을 초록 계열로 변경
                 hover_name="시도",
                 hover_data={"점유율(%)": ":.1f%", "예상관객수": ":,"},
             )
@@ -171,10 +184,17 @@ with tab2:
             with c1:
                 st.plotly_chart(fig, use_container_width=True)
             with c2:
-                st.markdown(f"### 📊 주간 총 관객수: **{total_audi:,}명**")
+                if selected_sido == "전체":
+                    st.markdown(f"### 📊 주간 총 관객수: **{total_audi:,}명**")
+                else:
+                    selected_info = filtered_df.iloc[0]
+                    st.markdown(f"### 📍 {selected_sido}")
+                    st.metric("점유율", f"{selected_info['점유율(%)']:.1f}%")
+                    st.metric("예상 관객수", f"{selected_info['예상관객수']:,}명")
+
                 st.dataframe(
-                    map_df.sort_values("점유율(%)", ascending=False),
+                    filtered_df.sort_values("점유율(%)", ascending=False),
                     hide_index=True,
                     use_container_width=True,
-                    height=500
+                    height=400
                 )
